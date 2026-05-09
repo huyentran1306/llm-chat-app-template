@@ -1,104 +1,116 @@
 /**
- * LLM Chat Application Template
+ * LLM Chat Application - English Learning Edition
  *
- * A simple chat application using Cloudflare Workers AI.
- * This template demonstrates how to implement an LLM-powered chat interface with
- * streaming responses using Server-Sent Events (SSE).
- *
- * @license MIT
+ * Enhanced for English learning with role-based conversations,
+ * streaming responses via SSE, and CORS support.
  */
 import { Env, ChatMessage } from "./types";
 
-// Model ID for Workers AI model
-// https://developers.cloudflare.com/workers-ai/models/
 const MODEL_ID = "@cf/meta/llama-3.1-8b-instruct-fp8";
 
-// Default system prompt
-const SYSTEM_PROMPT =
-	"You are a helpful, friendly assistant. Provide concise and accurate responses.";
+const SYSTEM_PROMPTS: Record<string, string> = {
+  partner: `You are a friendly English conversation partner helping someone practice English.
+Keep responses conversational, natural, and encouraging (2-4 sentences max).
+Occasionally point out one grammar or vocabulary improvement in a gentle way.
+Focus on making the learner feel comfortable and motivated.
+Always respond in English only.`,
+
+  interviewer: `You are a professional job interviewer conducting a mock interview in English.
+Ask realistic interview questions and give brief constructive feedback on the candidate's English and communication.
+Keep responses focused (2-4 sentences). Encourage proper business English usage.
+After their answer, give one tip and ask the next relevant question.
+Always respond in English only.`,
+
+  support: `You are a friendly customer support agent helping someone practice real-world English conversations.
+Simulate realistic customer service scenarios - billing, returns, technical issues, etc.
+Keep responses helpful and professional (2-4 sentences).
+Occasionally suggest more natural or polite phrases the learner could use.
+Always respond in English only.`,
+
+  teacher: `You are a patient English teacher helping a student improve their English.
+Explain grammar rules simply, correct mistakes kindly, and provide examples.
+Give clear, educational responses (3-5 sentences).
+Encourage the student and celebrate their progress.
+Always respond in English only.`,
+};
+
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
 
 export default {
-	/**
-	 * Main request handler for the Worker
-	 */
-	async fetch(
-		request: Request,
-		env: Env,
-		ctx: ExecutionContext,
-	): Promise<Response> {
-		const url = new URL(request.url);
+  async fetch(
+    request: Request,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<Response> {
+    // Handle CORS preflight
+    if (request.method === "OPTIONS") {
+      return new Response(null, { headers: CORS_HEADERS });
+    }
 
-		// Handle static assets (frontend)
-		if (url.pathname === "/" || !url.pathname.startsWith("/api/")) {
-			return env.ASSETS.fetch(request);
-		}
+    const url = new URL(request.url);
 
-		// API Routes
-		if (url.pathname === "/api/chat") {
-			// Handle POST requests for chat
-			if (request.method === "POST") {
-				return handleChatRequest(request, env);
-			}
+    if (url.pathname === "/" || !url.pathname.startsWith("/api/")) {
+      return env.ASSETS.fetch(request);
+    }
 
-			// Method not allowed for other request types
-			return new Response("Method not allowed", { status: 405 });
-		}
+    if (url.pathname === "/api/chat") {
+      if (request.method === "POST") {
+        return handleChatRequest(request, env);
+      }
+      return new Response("Method not allowed", { status: 405, headers: CORS_HEADERS });
+    }
 
-		// Handle 404 for unmatched routes
-		return new Response("Not found", { status: 404 });
-	},
+    return new Response("Not found", { status: 404, headers: CORS_HEADERS });
+  },
 } satisfies ExportedHandler<Env>;
 
-/**
- * Handles chat API requests
- */
 async function handleChatRequest(
-	request: Request,
-	env: Env,
+  request: Request,
+  env: Env,
 ): Promise<Response> {
-	try {
-		// Parse JSON request body
-		const { messages = [] } = (await request.json()) as {
-			messages: ChatMessage[];
-		};
+  try {
+    const { messages = [], role = "partner" } = (await request.json()) as {
+      messages: ChatMessage[];
+      role?: string;
+    };
 
-		// Add system prompt if not present
-		if (!messages.some((msg) => msg.role === "system")) {
-			messages.unshift({ role: "system", content: SYSTEM_PROMPT });
-		}
+    const systemPrompt = SYSTEM_PROMPTS[role] || SYSTEM_PROMPTS.partner;
 
-		const stream = await env.AI.run(
-			MODEL_ID,
-			{
-				messages,
-				max_tokens: 1024,
-				stream: true,
-			},
-			{
-				// Uncomment to use AI Gateway
-				// gateway: {
-				//   id: "YOUR_GATEWAY_ID", // Replace with your AI Gateway ID
-				//   skipCache: false,      // Set to true to bypass cache
-				//   cacheTtl: 3600,        // Cache time-to-live in seconds
-				// },
-			},
-		);
+    // Build messages array with system prompt
+    const allMessages: ChatMessage[] = [
+      { role: "system", content: systemPrompt },
+      ...messages.filter((m) => m.role !== "system"),
+    ];
 
-		return new Response(stream, {
-			headers: {
-				"content-type": "text/event-stream; charset=utf-8",
-				"cache-control": "no-cache",
-				connection: "keep-alive",
-			},
-		});
-	} catch (error) {
-		console.error("Error processing chat request:", error);
-		return new Response(
-			JSON.stringify({ error: "Failed to process request" }),
-			{
-				status: 500,
-				headers: { "content-type": "application/json" },
-			},
-		);
-	}
+    const stream = await env.AI.run(
+      MODEL_ID,
+      {
+        messages: allMessages,
+        max_tokens: 512,
+        stream: true,
+      },
+    );
+
+    return new Response(stream, {
+      headers: {
+        ...CORS_HEADERS,
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-cache",
+        "connection": "keep-alive",
+      },
+    });
+  } catch (error) {
+    console.error("Error processing chat request:", error);
+    return new Response(
+      JSON.stringify({ error: "Failed to process request" }),
+      {
+        status: 500,
+        headers: { ...CORS_HEADERS, "content-type": "application/json" },
+      },
+    );
+  }
 }
